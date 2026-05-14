@@ -84,8 +84,9 @@ class _TravelerHomePageState extends State<TravelerHomePage> {
   Future<void> _loadData({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
     try {
+      // Step 1: Show cached DB data instantly (no Notion sync)
       final results = await Future.wait([
-        _api.fetchTrips(sync: true),
+        _api.fetchTrips(sync: false),
         _api.fetchReceipts(),
       ]);
       if (mounted) {
@@ -95,8 +96,19 @@ class _TravelerHomePageState extends State<TravelerHomePage> {
           _trips = trips;
           _receipts = receipts;
           _analyticsService = AnalyticsService(receipts: receipts, trips: trips);
+          _loading = false;
         });
       }
+
+      // Step 2: Trigger background Notion sync, then refresh UI silently
+      _api.fetchTrips(sync: true).then((freshTrips) {
+        if (mounted) {
+          setState(() {
+            _trips = freshTrips;
+            _analyticsService = AnalyticsService(receipts: _receipts, trips: freshTrips);
+          });
+        }
+      }).catchError((e) => debugPrint('Background sync failed: $e'));
     } catch (e) {
       debugPrint('Failed to load data: $e');
     } finally {

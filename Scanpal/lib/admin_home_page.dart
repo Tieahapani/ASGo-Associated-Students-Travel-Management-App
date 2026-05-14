@@ -167,8 +167,19 @@ class _AdminHomePageState extends State<AdminHomePage> {
   Future<void> _loadData({bool silent = false}) async {
     if (!silent) setState(() => _loading = true);
     try {
-      final trips = await _api.fetchTrips(sync: true);
-      if (mounted) setState(() => _trips = trips);
+      // Step 1: Show cached DB data instantly (no Notion sync)
+      final trips = await _api.fetchTrips(sync: false);
+      if (mounted) {
+        setState(() {
+          _trips = trips;
+          _loading = false;
+        });
+      }
+
+      // Step 2: Trigger background Notion sync, then refresh UI silently
+      _api.fetchTrips(sync: true).then((freshTrips) {
+        if (mounted) setState(() => _trips = freshTrips);
+      }).catchError((e) => debugPrint('Background sync failed: $e'));
     } catch (e) {
       debugPrint('Failed to load admin data: $e');
     } finally {

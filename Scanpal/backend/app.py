@@ -282,11 +282,10 @@ def login():
             # Password correct — check if user is remembered (skip OTP)
             if user.remembered:
                 user.role = resolve_role(email, requested_role)
-                try:
-                    _sync_trips_from_notion(db, email)
-                except Exception as sync_err:
-                    logging.error(f"Trip sync on password login failed: {sync_err}")
                 db.commit()
+
+                # Sync Notion trips in background (don't block login)
+                threading.Thread(target=_bg_sync_traveler, args=(email,), daemon=True).start()
 
                 token = create_token(user.id, user.email, user.role)
                 return jsonify({
@@ -441,7 +440,8 @@ def verify_otp():
                     db.add(user)
                     db.commit()
                     db.refresh(user)
-                    _sync_trips_from_notion(db, email)
+                    # Sync Notion trips in background (don't block login)
+                    threading.Thread(target=_bg_sync_traveler, args=(email,), daemon=True).start()
                 else:
                     # Notion data removed since login — use stored OTP data
                     user = User(
@@ -468,12 +468,9 @@ def verify_otp():
                 db.commit()
                 db.refresh(user)
         else:
-            # Existing user login — update role, sync trips
+            # Existing user login — update role, sync trips in background
             user.role = resolve_role(email, otp_requested_role)
-            try:
-                _sync_trips_from_notion(db, email)
-            except Exception as sync_err:
-                logging.error(f"Trip sync on OTP verify failed: {sync_err}")
+            threading.Thread(target=_bg_sync_traveler, args=(email,), daemon=True).start()
 
         # Save pending password if one was provided during login
         if otp_pending_password:
@@ -822,45 +819,103 @@ def delete_account():
 # TRIPS
 # =============================================================================
 
+def _bg_fetch_cover_images():
+    """Background thread: fill in missing cover images for trips without one."""
+    db = SessionLocal()
+    try:
+        trips = db.query(Trip).filter(
+            Trip.cover_image_url.is_(None),
+            Trip.destination.isnot(None),
+        ).all()
+        for trip in trips:
+            try:
+                img_url = fetch_destination_image(trip.destination)
+                if img_url:
+                    trip.cover_image_url = img_url
+                    db.commit()
+            except Exception:
+                pass
+        logging.info(f"Background image fetch: processed {len(trips)} trips")
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Background image fetch failed: {e}")
+    finally:
+        db.close()
+
+
+def _bg_sync_admin():
+    """Background thread: sync all Notion trips for admin view."""
+    db = SessionLocal()
+    try:
+        parsed_rows = notion.sync_all_trips()
+        for parsed in parsed_rows:
+            email = parsed.get("email", "").strip().lower()
+            if not email:
+                continue
+            user = db.query(User).filter(User.email == email).first()
+            if not user:
+                user = User(
+                    id=str(uuid.uuid4()),
+                    email=email,
+                    name=parsed.get("traveler_name") or email.split("@")[0],
+                    department=parsed.get("department"),
+                    role="admin" if is_admin_email(email) else "traveler",
+                )
+                db.add(user)
+            if user.name and user.name != email.split("@")[0]:
+                parsed["traveler_name"] = user.name
+            elif not parsed.get("traveler_name"):
+                parsed["traveler_name"] = user.name
+            _upsert_trip(db, parsed, email)
+        db.commit()
+
+        for parsed in parsed_rows:
+            email = parsed.get("email", "").strip().lower()
+            notion_page_id = parsed.get("notion_page_id")
+            if not email or not notion_page_id:
+                continue
+            trip = db.query(Trip).filter(Trip.notion_page_id == notion_page_id).first()
+            if trip:
+                _create_admin_placeholders(db, trip)
+        db.commit()
+        logging.info(f"Background admin sync complete: {len(parsed_rows)} rows")
+        # Fetch missing cover images in a separate pass (doesn't block sync)
+        threading.Thread(target=_bg_fetch_cover_images, daemon=True).start()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Background admin sync failed: {e}")
+    finally:
+        db.close()
+
+
+def _bg_sync_traveler(email):
+    """Background thread: sync Notion trips for a single traveler."""
+    db = SessionLocal()
+    try:
+        _sync_trips_from_notion(db, email)
+        logging.info(f"Background traveler sync complete for {email}")
+        # Fetch missing cover images in a separate pass (doesn't block sync)
+        threading.Thread(target=_bg_fetch_cover_images, daemon=True).start()
+    except Exception as e:
+        db.rollback()
+        logging.error(f"Background traveler sync failed for {email}: {e}")
+    finally:
+        db.close()
+
+
 @app.get("/trips")
 @require_auth
 def get_trips():
     """Get trips. Traveler sees their own, admin sees all.
-    Pass ?sync=true to trigger a full Notion sync (used on pull-to-refresh)."""
+    Pass ?sync=true to trigger a background Notion sync (non-blocking)."""
     db = SessionLocal()
     try:
-        # Optional Notion sync (pull-to-refresh)
+        # Fire Notion sync in background thread (non-blocking)
         if request.args.get("sync") == "true":
-            try:
-                if g.user_role == "admin":
-                    # Admin: sync ALL travelers from Notion
-                    parsed_rows = notion.sync_all_trips()
-                    for parsed in parsed_rows:
-                        email = parsed.get("email", "").strip().lower()
-                        if not email:
-                            continue
-                        user = db.query(User).filter(User.email == email).first()
-                        if not user:
-                            user = User(
-                                id=str(uuid.uuid4()),
-                                email=email,
-                                name=parsed.get("traveler_name") or email.split("@")[0],
-                                department=parsed.get("department"),
-                                role="admin" if is_admin_email(email) else "traveler",
-                            )
-                            db.add(user)
-                        # Name priority: App profile > Notion > email prefix
-                        if user.name and user.name != email.split("@")[0]:
-                            parsed["traveler_name"] = user.name
-                        elif not parsed.get("traveler_name"):
-                            parsed["traveler_name"] = user.name
-                        _upsert_trip(db, parsed, email)
-                    db.commit()
-                else:
-                    _sync_trips_from_notion(db, g.user_email)
-            except Exception as sync_err:
-                logging.error(f"Pull-to-refresh sync failed: {sync_err}")
-                db.rollback()
+            if g.user_role == "admin":
+                threading.Thread(target=_bg_sync_admin, daemon=True).start()
+            else:
+                threading.Thread(target=_bg_sync_traveler, args=(g.user_email,), daemon=True).start()
 
         if g.user_role == "admin":
             all_trips = (
@@ -917,17 +972,8 @@ def get_trip_detail(trip_id):
         if g.user_role != "admin" and trip.traveler_email != g.user_email:
             return jsonify({"error": "Access denied"}), 403
 
-        # Refresh status from Notion if trip has a Notion page
-        if trip.notion_page_id:
-            try:
-                page = notion.get_page(trip.notion_page_id)
-                parsed = notion.parse_notion_row(page)
-                if parsed.get("status") and parsed["status"] != trip.status:
-                    trip.status = parsed["status"]
-                    db.commit()
-                    logging.info(f"Trip {trip_id} status updated to '{trip.status}' from Notion")
-            except Exception as sync_err:
-                logging.error(f"Notion status refresh failed for trip {trip_id}: {sync_err}")
+        # Status is kept in sync via the background sync on /trips?sync=true
+        # No blocking Notion call here — trip detail loads instantly
 
         receipts = (
             db.query(Receipt)
@@ -1181,16 +1227,8 @@ def _upsert_trip(db, parsed, traveler_email):
         if parsed.get("status"):
             existing.status = parsed["status"]
         # Preserve app-only fields (budget, category, description, travelers)
-        # Fetch image only if no image yet (don't overwrite app-edited cover)
-        if existing.destination and not existing.cover_image_url:
-            try:
-                img_url = fetch_destination_image(existing.destination)
-                if img_url:
-                    existing.cover_image_url = img_url
-            except Exception:
-                pass
+        # Cover images are fetched in a separate background pass after sync
     else:
-        cover_image_url = fetch_destination_image(destination) if destination else None
         trip = Trip(
             id=str(uuid.uuid4()),
             notion_page_id=notion_page_id,
@@ -1211,7 +1249,6 @@ def _upsert_trip(db, parsed, traveler_email):
             total_expenses=parsed.get("total_expenses", 0.0),
             advance=parsed.get("advance", 0.0),
             claim=parsed.get("claim", 0.0),
-            cover_image_url=cover_image_url,
             synced_at=datetime.now(timezone.utc),
         )
         db.add(trip)

@@ -23,7 +23,7 @@ class _TripDetailPageState extends State<TripDetailPage> {
   final _currency = NumberFormat.simpleCurrency();
   late Trip _trip;
   List<Receipt> _receipts = [];
-  bool _loading = true;
+  bool _receiptsLoading = true;
   bool _isAdmin = false;
   final _commentCtrl = TextEditingController();
 
@@ -88,14 +88,14 @@ class _TripDetailPageState extends State<TripDetailPage> {
   }
 
   Future<void> _loadReceipts() async {
-    setState(() => _loading = true);
+    setState(() => _receiptsLoading = true);
     try {
       final receipts = await _api.fetchReceipts(tripId: _trip.id);
       if (mounted) setState(() => _receipts = receipts);
     } catch (e) {
       debugPrint('Failed to load receipts: $e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) setState(() => _receiptsLoading = false);
     }
   }
 
@@ -304,13 +304,7 @@ class _TripDetailPageState extends State<TripDetailPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFFAFAFA),
-      body: _loading
-          ? const Center(
-              child: CircularProgressIndicator(
-                valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF46166B)),
-              ),
-            )
-          : RefreshIndicator(
+      body: RefreshIndicator(
               color: const Color(0xFF46166B),
               onRefresh: () async {
                 await Future.wait([_loadReceipts(), _refreshTrip()]);
