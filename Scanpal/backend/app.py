@@ -1542,9 +1542,16 @@ Return ONLY valid JSON in this EXACT format (no markdown, no extra text):
         # Save to PostgreSQL
         db = SessionLocal()
         try:
+            # If admin is uploading to a traveler's trip, assign to the traveler
+            receipt_owner = g.user_email
+            if g.user_role == "admin" and trip_id:
+                trip_obj = db.query(Trip).filter(Trip.id == trip_id).first()
+                if trip_obj and trip_obj.traveler_email:
+                    receipt_owner = trip_obj.traveler_email
+
             receipt = Receipt(
                 id=receipt_id,
-                user_id=g.user_email,
+                user_id=receipt_owner,
                 trip_id=trip_id,
                 travel_category=detected_category,
                 image_url=image_filename,
