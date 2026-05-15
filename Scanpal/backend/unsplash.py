@@ -45,51 +45,34 @@ def _clean_destination(raw: str) -> str:
 
 
 def _find_place_photo(query: str) -> str | None:
-    """Use Google Places API to find a place and return a photo URL."""
-    # Step 1: Find the place
-    resp = requests.get(
-        "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
-        params={
-            "input": query,
-            "inputtype": "textquery",
-            "fields": "place_id,photos",
-            "key": GOOGLE_PLACES_API_KEY,
+    """Use Google Places API (New) to find a place and return a photo URL."""
+    # Step 1: Text Search to find the place with photos
+    resp = requests.post(
+        "https://places.googleapis.com/v1/places:searchText",
+        json={
+            "textQuery": query,
+            "maxResultCount": 1,
+        },
+        headers={
+            "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+            "X-Goog-FieldMask": "places.id,places.photos",
         },
         timeout=10,
     )
     resp.raise_for_status()
-    candidates = resp.json().get("candidates", [])
-    if not candidates:
+    places = resp.json().get("places", [])
+    if not places:
         return None
 
-    # Check if the find place response already includes photos
-    photos = candidates[0].get("photos")
-    if not photos:
-        # Step 2: Get place details for photos
-        place_id = candidates[0].get("place_id")
-        if not place_id:
-            return None
-        detail_resp = requests.get(
-            "https://maps.googleapis.com/maps/api/place/details/json",
-            params={
-                "place_id": place_id,
-                "fields": "photos",
-                "key": GOOGLE_PLACES_API_KEY,
-            },
-            timeout=10,
-        )
-        detail_resp.raise_for_status()
-        result = detail_resp.json().get("result", {})
-        photos = result.get("photos")
-
+    photos = places[0].get("photos")
     if not photos:
         return None
 
-    # Step 3: Build the photo URL
-    photo_reference = photos[0]["photo_reference"]
+    # Step 2: Build the photo URI from the photo resource name
+    photo_name = photos[0]["name"]
     return (
-        f"https://maps.googleapis.com/maps/api/place/photo"
-        f"?maxwidth=1200&photo_reference={photo_reference}&key={GOOGLE_PLACES_API_KEY}"
+        f"https://places.googleapis.com/v1/{photo_name}/media"
+        f"?maxWidthPx=1200&key={GOOGLE_PLACES_API_KEY}"
     )
 
 
