@@ -8,8 +8,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
-UNSPLASH_API_URL = "https://api.unsplash.com/search/photos"
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY")
 
 # US state abbreviations to strip from destination strings
 _STATE_ABBREVS = {
@@ -22,21 +21,12 @@ _STATE_ABBREVS = {
 
 
 def _clean_destination(raw: str) -> str:
-    """Extract a clean city/place name from messy destination strings.
-    Handles formats like 'Hayward,CA', 'Long Beach Trip', 'SJSU',
-    '1001 Broadway, Oakland, California 94607', etc."""
+    """Extract a clean city/place name from messy destination strings."""
     text = raw.strip()
-
-    # Remove "Trip" suffix (case-insensitive)
     text = re.sub(r'\s*trip\s*$', '', text, flags=re.IGNORECASE)
-
-    # Remove zip codes
     text = re.sub(r'\b\d{5}(-\d{4})?\b', '', text)
-
-    # Remove street numbers at the start (e.g. "1001 Broadway, Oakland...")
     text = re.sub(r'^\d+\s+\w+\s*(,|\.)\s*', '', text)
 
-    # Remove state abbreviations (standalone, after comma, etc.)
     parts = [p.strip() for p in text.split(',')]
     cleaned_parts = []
     for part in parts:
@@ -47,37 +37,67 @@ def _clean_destination(raw: str) -> str:
             cleaned_parts.append(joined)
     text = ', '.join(cleaned_parts)
 
-    # Remove full state names like "California"
-    text = re.sub(r',?\s*\b(California|Texas|Florida|New York|Illinois|Ohio|Pennsylvania|Georgia|Michigan|Washington)\b', '', text, flags=re.IGNORECASE)
-
+    text = re.sub(
+        r',?\s*\b(California|Texas|Florida|New York|Illinois|Ohio|Pennsylvania|Georgia|Michigan|Washington)\b',
+        '', text, flags=re.IGNORECASE,
+    )
     return text.strip().strip(',').strip()
 
 
-def _search_unsplash(query: str) -> str | None:
-    """Run a single Unsplash search, return image URL or None."""
+def _find_place_photo(query: str) -> str | None:
+    """Use Google Places API to find a place and return a photo URL."""
+    # Step 1: Find the place
     resp = requests.get(
-        UNSPLASH_API_URL,
+        "https://maps.googleapis.com/maps/api/place/findplacefromtext/json",
         params={
-            "query": query,
-            "per_page": 1,
-            "orientation": "landscape",
+            "input": query,
+            "inputtype": "textquery",
+            "fields": "place_id,photos",
+            "key": GOOGLE_PLACES_API_KEY,
         },
-        headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
         timeout=10,
     )
     resp.raise_for_status()
-    results = resp.json().get("results", [])
-    if results:
-        return results[0]["urls"]["regular"]
-    return None
+    candidates = resp.json().get("candidates", [])
+    if not candidates:
+        return None
+
+    # Check if the find place response already includes photos
+    photos = candidates[0].get("photos")
+    if not photos:
+        # Step 2: Get place details for photos
+        place_id = candidates[0].get("place_id")
+        if not place_id:
+            return None
+        detail_resp = requests.get(
+            "https://maps.googleapis.com/maps/api/place/details/json",
+            params={
+                "place_id": place_id,
+                "fields": "photos",
+                "key": GOOGLE_PLACES_API_KEY,
+            },
+            timeout=10,
+        )
+        detail_resp.raise_for_status()
+        result = detail_resp.json().get("result", {})
+        photos = result.get("photos")
+
+    if not photos:
+        return None
+
+    # Step 3: Build the photo URL
+    photo_reference = photos[0]["photo_reference"]
+    return (
+        f"https://maps.googleapis.com/maps/api/place/photo"
+        f"?maxwidth=1200&photo_reference={photo_reference}&key={GOOGLE_PLACES_API_KEY}"
+    )
 
 
 def fetch_destination_image(destination: str) -> str | None:
-    """Fetch a landscape photo URL from Unsplash for the given destination.
-    Tries progressively broader queries to handle small cities and typos.
-    Returns the regular-size image URL, or None on failure."""
-    if not UNSPLASH_ACCESS_KEY:
-        logger.warning("UNSPLASH_ACCESS_KEY not set, skipping image fetch")
+    """Fetch a photo URL from Google Places for the given destination.
+    Returns the photo URL, or None on failure."""
+    if not GOOGLE_PLACES_API_KEY:
+        logger.warning("GOOGLE_PLACES_API_KEY not set, skipping image fetch")
         return None
 
     if not destination or not destination.strip():
@@ -87,21 +107,13 @@ def fetch_destination_image(destination: str) -> str | None:
     if not city:
         city = destination.strip()
 
-    # Try queries from most specific to broadest
-    queries = [
-        f"{city} city landmark",
-        f"{city} travel",
-        city,
-    ]
-
     try:
-        for query in queries:
-            url = _search_unsplash(query)
-            if url:
-                logger.info(f"Unsplash hit for '{destination}' using query '{query}'")
-                return url
-        logger.info(f"No Unsplash results for '{destination}' (tried {len(queries)} queries)")
+        url = _find_place_photo(city)
+        if url:
+            logger.info(f"Google Places hit for '{destination}' (query: '{city}')")
+            return url
+        logger.info(f"No Google Places photo for '{destination}'")
         return None
     except Exception as e:
-        logger.error(f"Unsplash fetch failed for '{destination}': {e}")
+        logger.error(f"Google Places fetch failed for '{destination}': {e}")
         return None
