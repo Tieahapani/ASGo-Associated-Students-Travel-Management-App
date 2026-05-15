@@ -4,6 +4,7 @@ import 'auth_service.dart';
 import 'login_page.dart';
 import 'profile_page.dart';
 import 'change_password_page.dart';
+import 'main.dart' show themeProvider;
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -13,7 +14,6 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  bool _darkMode = false;
   bool _notifications = true;
   bool _isDeletingAccount = false;
 
@@ -34,7 +34,7 @@ class _SettingsPageState extends State<SettingsPage> {
       builder: (ctx) => Container(
         margin: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: Theme.of(context).cardColor,
           borderRadius: BorderRadius.circular(20),
         ),
         child: SafeArea(
@@ -200,7 +200,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF9FAFB),
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: CustomScrollView(
         slivers: [
           // Purple header
@@ -305,8 +305,8 @@ class _SettingsPageState extends State<SettingsPage> {
                   _settingsToggleRow(
                     icon: Icons.dark_mode_outlined,
                     label: 'Dark Mode',
-                    value: _darkMode,
-                    onChanged: (val) => setState(() => _darkMode = val),
+                    value: themeProvider.isDark,
+                    onChanged: (val) => themeProvider.toggle(val),
                   ),
                   _divider(),
                   _settingsToggleRow(
@@ -388,7 +388,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _card(List<Widget> children) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: Theme.of(context).cardColor,
         borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
@@ -437,7 +437,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 style: TextStyle(
                   fontSize: 15,
                   fontWeight: FontWeight.w500,
-                  color: isDestructive ? Colors.red.shade600 : const Color(0xFF111827),
+                  color: isDestructive ? Colors.red.shade600 : Theme.of(context).colorScheme.onSurface,
                 ),
               ),
             ),
@@ -481,10 +481,10 @@ class _SettingsPageState extends State<SettingsPage> {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w500,
-                color: Color(0xFF111827),
+                color: Theme.of(context).colorScheme.onSurface,
               ),
             ),
           ),
@@ -544,7 +544,7 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _divider() {
     return Padding(
       padding: const EdgeInsets.only(left: 66),
-      child: Divider(height: 1, color: Colors.grey.shade100),
+      child: Divider(height: 1, color: Theme.of(context).dividerColor.withValues(alpha: 0.3)),
     );
   }
 }

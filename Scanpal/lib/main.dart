@@ -4,6 +4,9 @@ import 'models/user.dart';
 import 'login_page.dart';
 import 'traveler_home_page.dart';
 import 'admin_home_page.dart';
+import 'theme_provider.dart';
+
+final themeProvider = ThemeProvider();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,11 +33,21 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   @override
+  void initState() {
+    super.initState();
+    themeProvider.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'ScanPal',
-      theme: ThemeData.light(),
+      theme: ThemeProvider.light,
+      darkTheme: ThemeProvider.dark,
+      themeMode: themeProvider.isDark ? ThemeMode.dark : ThemeMode.light,
       home: widget.isLoggedIn
           ? (widget.user!.isAdmin
               ? AdminHomePage(user: widget.user!)
